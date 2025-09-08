@@ -2,23 +2,23 @@
 
 **Ziele**
 
-- Globale + repo‑lokale Aliases verwalten
-- Priorität **Repo (.lam-aliases) > Global**
-- **Walk‑Up** wie bei asdf (nächstgelegene Konfig gewinnt)
-- asdf‑artige CLI‑Experience, aber **ohne** Profil/Version‑Konzept
+- Super‑einfaches Alias‑Management mit **nur zwei Ebenen** (lokal & global)
+- **Keine CLI‑Scopes/Flags** nötig
+- Walk‑Up: Nächstgelegene `.lam-aliases` gilt (CWD → Eltern → Root; Fallback global)
+- asdf‑ähnliche UX (Bekanntheit, Developer‑Erwartung)
 
 **Non‑Goals v1**
 
+- Kein Profil/Version‑System, keine Packs
 - Kein Package‑Install/Update‑Flow
-- Keine YAML/TOML‑Parser, keine Packs
-- Kein Multi‑Shell (Bash/Fish)
+- Keine Multi‑Shell‑Unterstützung (nur Zsh)
 
 ---
 
 ## Personas & JTBD
 
-- **Dev**: will bekannte asdf‑UX in simpel für Aliases
-- **Teammitglied**: Repo teilt Shortcuts via `.lam-aliases`
-- **Student**: will Hook‑/CLI‑Design verstehen
+- **Dev**: Will „einfach kurz Aliases pro Projekt“ – ohne `.zshrc`‑Frickelei.
+- **Team**: Teilt `.lam-aliases` im Repo, alle haben dieselben Shortcuts.
+- **Student**: Lernt Hooks/CLI/Dateikonventionen.
 
-**JTBD:** „Beim Projektwechsel sollen **die richtigen Aliases** automatisch aktiv sein, ohne `.zshrc` zu editieren.“
+**JTBD:** „Wechsle ich das Projekt, sollen **die richtigen Aliases** sofort aktiv sein.“

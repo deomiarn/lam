@@ -1,13 +1,16 @@
-**Problem:** Alias‑Definitionen sind verstreut; kein deterministisches Zusammenführen zwischen global und projektbezogen.
+**Problem:** Aliases liegen verstreut; kein sauberes, deterministisches Verhalten zwischen global und projektlokal.
 
-**Lösung (LAM) für Aliases:** asdf‑inspirierte, aber vereinfachte Mechanik:
-Lege im Projekt eine .lam-aliases an, LAM findet sie per Walk‑Up, merged sie mit globalen Aliases und lädt automatisch beim cd.
+**Lösung (LAM):** asdf‑inspirierte UX mit **nur zwei Ebenen**:
 
-- **Repo‑Datei:** `.lam-aliases` (je Zeile `name=command`).
-- **Global:** `~/.lam/alias.d/global.lam-aliases`.
-- **Walk‑Up:** Suche von **CWD → Eltern → `$HOME`** nach der **nächsten `.lam-aliases`** (wie asdf mit `.tool-versions`).
-- **Merge:** Repo > Global.
-- **Runtime:** Kompilat `~/.lam/compiled/current.zsh` wird gesourced (schnell & sicher).
-- **CLI:** asdf‑artige Befehle: `lam alias add/rm`, `lam list aliases`, `lam current`, `lam which`, `lam compile`, `lam doctor`.
+- **Lokal:** `.lam-aliases` im (nächstgelegenen) Projektordner (per Walk‑Up gesucht).
+- **Global:** `~/.lam-aliases` im Homeverzeichnis.
+- **Merge:** Lokal **über** Global → Kompilat `~/.lam/compiled/current.zsh` wird beim `cd` gesourced.
+- **CLI:** simple Befehle wie `lam add`, `lam rm`, `lam list`, `lam global add`, `lam current`, `lam compile`, `lam which`, `lam doctor`.
 
 **KPIs:** Overhead < 10 ms; TTFA < 60 s; deterministischer Output.
+
+---
+
+## TL;DR (Elevator Pitch)
+
+**Wie asdf, aber ohne Versionskonzept:** Du pflegst **lokale Aliases** in `.lam-aliases` (Projekt), **globale** in `~/.lam-aliases`. Beim Ordnerwechsel lädt LAM automatisch **lokal ⟶ global** (lokal gewinnt).
