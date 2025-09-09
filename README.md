@@ -98,13 +98,3 @@ rm -rf "$HOME/.lam"              # optional: Kompilate löschen
 source ~/.zshrc
 
 ```
-
-## Status
-
-MVP für **zsh**. Fokus: klare, deterministische Aliases mit minimalem Surface-Area.
-
-```
-
-Willst du, dass ich dir daraus gleich eine komplette `README.md` baue (inkl. kurzer Install-Sektion oben), oder soll es nur als Anhang zu deiner Projektdoku dienen?
-
-```
