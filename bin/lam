@@ -5,7 +5,6 @@ set -euo pipefail
 # pipefail : a pipeline fails if any command in the pipeline fails
 
 # --- Constants & Defaults ---
-# You can override these with environment variables before running lam
 LAM_GLOBAL_FILE=${LAM_GLOBAL_FILE:-"$HOME/.lam-aliases"}
 LAM_COMPILED_DIR=${LAM_COMPILED_DIR:-"$HOME/.lam/compiled"}
 LAM_COMPILED_FILE="${LAM_COMPILED_DIR}/current.zsh"
@@ -50,7 +49,7 @@ lam_find_local_aliases_file() {
     if [[ -f "$dir/.lam-aliases" ]]; then
       print -r -- "$dir/.lam-aliases"; return 0
     fi
-    parent=${dir%/*}   # strip last "/..." → parent directory
+    parent=${dir%/*}
     [[ -z "$parent" || "$parent" == "$dir" ]] && break
     dir="$parent"
   done
@@ -64,54 +63,28 @@ lam_ensure_local_aliases_file() {
   print -r -- "$file"
 }
 
-# --- Parsing Helpers ---
-# Read name=command lines into an associative map. The 2nd arg is the map name.
-lam_parse_file_into_map() {
-  local file="$1" map_name="$2"
-  typeset -g -A "$map_name"
-  typeset -n ref="$map_name"   # nameref: lets us write ref["key"]=... safely without eval
+# --- Helpers ---
+lam_validate_name() {
+  local name="$1"
+  # valid if non-empty and removing allowed chars leaves nothing
+  [[ -n "$name" && -z "${name//[A-Za-z0-9_-]/}" ]]
+}
 
-  local line name command
+# stream valid pairs "name<TAB>command" from a file
+lam_stream_pairs() {
+  local file="$1" line name command
   [[ -f "$file" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "$line" || "$line" == \#* ]] && continue  # skip empty lines and comments
-    name="${line%%=*}"       # left of first '='
-    command="${line#*=}"     # right of first '=' (may contain '=')
-    name="${name//[[:space:]]/}"  # remove whitespace from name
-    [[ "$name" =~ '^[A-Za-z0-9_-]+$' ]] || continue   # validate allowed alias name
-    ref[$name]="$command"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    name="${line%%=*}"
+    command="${line#*=}"
+    name="${name//[[:space:]]/}"
+    [[ -n "$name" && -z "${name//[A-Za-z0-9_-]/}" ]] || continue
+    printf '%s\t%s\n' "$name" "$command"
   done < "$file"
 }
 
-# --- Merge Helper ---
-# Merge global + local into associative map named by $3 (local overrides global)
-lam_merge_global_local() {
-  local global_file="$1" local_file="$2" out_name="$3"
-  typeset -g -A "$out_name"
-  typeset -A g l
-  lam_parse_file_into_map "$global_file" g
-  lam_parse_file_into_map "$local_file"  l
-
-  typeset -n out="$out_name"  # nameref to the output map
-
-  local k
-  # copy global first
-  for k in ${(k)g}; do
-    out[$k]="${g[$k]}"
-  done
-  # then overlay local (local wins)
-  for k in ${(k)l}; do
-    out[$k]="${l[$k]}"
-  done
-}
-
 # --- Write Helpers ---
-lam_validate_name() {
-  local name="$1"
-  [[ "$name" =~ '^[A-Za-z0-9_-]+$' ]]
-}
-
-# Idempotent write: remove existing key line, then append "name=cmd"
 lam_write_kv() {
   local file="$1" name="$2" cmd="$3"
   mkdir -p "$(dirname "$file")"
@@ -191,19 +164,26 @@ lam_escape_squotes() {
 }
 
 lam_cmd_compile() {
-  local local_file="" global_file="$LAM_GLOBAL_FILE"
-  lam_find_local_aliases_file && local_file=$(lam_find_local_aliases_file) || true
+  local local_file=""
+  if local_file=$(lam_find_local_aliases_file); then :; fi  # capture once, no stdout noise
 
-  typeset -A eff
-  lam_merge_global_local "$global_file" "${local_file:-/dev/null}" eff
+  typeset -A G L EFF
+  # read global → G
+  local n c
+  while IFS=$'\t' read -r n c; do G[$n]="$c"; done < <(lam_stream_pairs "$LAM_GLOBAL_FILE")
+  # read local → L
+  while IFS=$'\t' read -r n c; do L[$n]="$c"; done < <(lam_stream_pairs "${local_file:-/dev/null}")
+  # merge G then overlay L → EFF
+  local k
+  for k in ${(k)G}; do EFF[$k]="${G[$k]}"; done
+  for k in ${(k)L}; do EFF[$k]="${L[$k]}"; done
 
   mkdir -p "$LAM_COMPILED_DIR"
   local tmp; tmp=$(mktemp "$LAM_COMPILED_DIR/.current.zsh.XXXXXX")
   : > "$tmp"
-
-  local k v esc
-  for k in ${(ok)eff}; do
-    v=${eff[$k]}
+  local v esc
+  for k in ${(ok)EFF}; do
+    v=${EFF[$k]}
     esc=$(lam_escape_squotes "$v")
     print -r -- "alias $k='$esc'" >> "$tmp"
   done
@@ -213,31 +193,31 @@ lam_cmd_compile() {
 }
 
 lam_cmd_current() {
-  local f
+  local f=""
   if f=$(lam_find_local_aliases_file); then
     echo "local file: $f"
   else
     echo "local file: (none)"
   fi
-  if [[ -f "$LAM_GLOBAL_FILE" ]]; then
-    echo "global file: $LAM_GLOBAL_FILE"
-  else
-    echo "global file: (none)"
-  fi
+  [[ -f "$LAM_GLOBAL_FILE" ]] && echo "global file: $LAM_GLOBAL_FILE" || echo "global file: (none)"
 }
 
 lam_cmd_which() {
   local name="${1:-}"
   [[ -n "$name" ]] || { echo "lam which: need <alias>" >&2; exit 1; }
-  local local_file="" global_file="$LAM_GLOBAL_FILE"
-  lam_find_local_aliases_file && local_file=$(lam_find_local_aliases_file) || true
-  typeset -A g l
-  lam_parse_file_into_map "$global_file" g
-  lam_parse_file_into_map "${local_file:-/dev/null}" l
-  if [[ -n "${l[$name]-}" ]]; then
-    echo "$name -> local: ${l[$name]}"
-  elif [[ -n "${g[$name]-}" ]]; then
-    echo "$name -> global: ${g[$name]}"
+
+  local local_file=""
+  if local_file=$(lam_find_local_aliases_file); then :; fi
+
+  typeset -A G L
+  local n c
+  while IFS=$'\t' read -r n c; do G[$n]="$c"; done < <(lam_stream_pairs "$LAM_GLOBAL_FILE")
+  while IFS=$'\t' read -r n c; do L[$n]="$c"; done < <(lam_stream_pairs "${local_file:-/dev/null}")
+
+  if [[ -n "${L[$name]-}" ]]; then
+    echo "$name -> local: ${L[$name]}"
+  elif [[ -n "${G[$name]-}" ]]; then
+    echo "$name -> global: ${G[$name]}"
   else
     echo "alias not found: $name" >&2; exit 1
   fi
