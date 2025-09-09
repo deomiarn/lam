@@ -21,9 +21,18 @@ if [[ -z ${LAM_CLI} ]]; then
 fi
 
 # Provide a `lam` function so users can call `lam ...` without PATH edits
+# Wrapper enhancement: after add/rm/global add/rm (or explicit `compile`) we auto-compile and source.
 lam() {
   if [[ -n "$LAM_CLI" && -x "$LAM_CLI" ]]; then
     command zsh "$LAM_CLI" "$@"
+    local st=$?
+    if (( st == 0 )); then
+      local a1="${1:-}" a2="${2:-}"
+      if [[ "$a1" == "compile" || "$a1" == "add" || "$a1" == "rm" || ( "$a1" == "global" && ( "$a2" == "add" || "$a2" == "rm" ) ) ]]; then
+        _lam_compile_and_source
+      fi
+    fi
+    return $st
   else
     print -r -- "LAM: CLI not found. Expected ${_LAM_PLUGDIR}/lam or ${_LAM_PLUGDIR}/../bin/lam. Set \$LAM_CLI to override." >&2
     return 127
