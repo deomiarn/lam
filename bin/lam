@@ -1,0 +1,293 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+# -e  : exit on any unhandled error
+# -u  : error on use of unset variables
+# pipefail : a pipeline fails if any command in the pipeline fails
+
+# --- Constants & Defaults ---
+# You can override these with environment variables before running lam
+LAM_GLOBAL_FILE=${LAM_GLOBAL_FILE:-"$HOME/.lam-aliases"}
+LAM_COMPILED_DIR=${LAM_COMPILED_DIR:-"$HOME/.lam/compiled"}
+LAM_COMPILED_FILE="${LAM_COMPILED_DIR}/current.zsh"
+LAM_VERSION="v1.0.0-mvp"
+
+# Ensure compiled dir exists
+mkdir -p "$LAM_COMPILED_DIR"
+
+# (Optional) Ensure global file exists; harmless if already present.
+# If you prefer lazy creation only on first "lam global add", you can remove this.
+[[ -f "$LAM_GLOBAL_FILE" ]] || : > "$LAM_GLOBAL_FILE"
+
+usage() {
+  cat <<'EOF'
+Usage: lam <command> [args]
+
+Local (default):
+  lam add <name> <command>
+  lam rm <name>
+  lam list
+
+Global:
+  lam global add <name> <command>
+  lam global rm <name>
+  lam global list
+
+Status/Runtime:
+  lam current
+  lam which <alias>
+  lam compile
+  lam doctor
+  lam version
+  lam info
+EOF
+}
+
+# --- Path Helpers ---
+# Find the closest .lam-aliases by walking up from $PWD to /
+lam_find_local_aliases_file() {
+  local dir="$PWD" parent
+  while true; do
+    if [[ -f "$dir/.lam-aliases" ]]; then
+      print -r -- "$dir/.lam-aliases"; return 0
+    fi
+    parent=${dir%/*}   # strip last "/..." → parent directory
+    [[ -z "$parent" || "$parent" == "$dir" ]] && break
+    dir="$parent"
+  done
+  return 1
+}
+
+# Ensure a .lam-aliases exists in the current directory when we want to write
+lam_ensure_local_aliases_file() {
+  local file="$PWD/.lam-aliases"
+  [[ -f "$file" ]] || : > "$file"
+  print -r -- "$file"
+}
+
+# --- Parsing Helpers ---
+# Read name=command lines into an associative map. The 2nd arg is the map name.
+lam_parse_file_into_map() {
+  local file="$1" map_name="$2"
+  typeset -g -A "$map_name"
+  typeset -n ref="$map_name"   # nameref: lets us write ref["key"]=... safely without eval
+
+  local line name command
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" == \#* ]] && continue  # skip empty lines and comments
+    name="${line%%=*}"       # left of first '='
+    command="${line#*=}"     # right of first '=' (may contain '=')
+    name="${name//[[:space:]]/}"  # remove whitespace from name
+    [[ "$name" =~ '^[A-Za-z0-9_-]+$' ]] || continue   # validate allowed alias name
+    ref[$name]="$command"
+  done < "$file"
+}
+
+# --- Merge Helper ---
+# Merge global + local into associative map named by $3 (local overrides global)
+lam_merge_global_local() {
+  local global_file="$1" local_file="$2" out_name="$3"
+  typeset -g -A "$out_name"
+  typeset -A g l
+  lam_parse_file_into_map "$global_file" g
+  lam_parse_file_into_map "$local_file"  l
+
+  typeset -n out="$out_name"  # nameref to the output map
+
+  local k
+  # copy global first
+  for k in ${(k)g}; do
+    out[$k]="${g[$k]}"
+  done
+  # then overlay local (local wins)
+  for k in ${(k)l}; do
+    out[$k]="${l[$k]}"
+  done
+}
+
+# --- Write Helpers ---
+lam_validate_name() {
+  local name="$1"
+  [[ "$name" =~ '^[A-Za-z0-9_-]+$' ]]
+}
+
+# Idempotent write: remove existing key line, then append "name=cmd"
+lam_write_kv() {
+  local file="$1" name="$2" cmd="$3"
+  mkdir -p "$(dirname "$file")"
+  [[ -f "$file" ]] || : > "$file"
+  local tmp; tmp=$(mktemp "${file}.XXXXXX")
+  # drop lines whose first field (before '=') equals the key
+  awk -v key="$name" -F= '{ if ($1!=key) print $0 }' "$file" > "$tmp"
+  printf '%s=%s\n' "$name" "$cmd" >> "$tmp"
+  mv "$tmp" "$file"
+}
+
+lam_remove_key() {
+  local file="$1" name="$2"
+  [[ -f "$file" ]] || return 0
+  local tmp; tmp=$(mktemp "${file}.XXXXXX")
+  awk -v key="$name" -F= '{ if ($1!=key) print $0 }' "$file" > "$tmp" # drop matching keys
+  mv "$tmp" "$file"
+}
+
+# --- Commands: local ---
+lam_cmd_add_local() {
+  local name="${1:-}" cmd="${2:-}"
+  [[ -n "$name" && -n "$cmd" ]] || { echo "lam add: need <name> <command>" >&2; exit 1; }
+  lam_validate_name "$name" || { echo "invalid alias name: $name" >&2; exit 1; }
+  local file; file=$(lam_ensure_local_aliases_file)
+  lam_write_kv "$file" "$name" "$cmd"
+  echo "wrote $name to $file"
+}
+
+lam_cmd_rm_local() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || { echo "lam rm: need <name>" >&2; exit 1; }
+  local file
+  if file=$(lam_find_local_aliases_file); then
+    lam_remove_key "$file" "$name"
+    echo "removed $name from $file"
+  else
+    echo "no local .lam-aliases found" >&2; exit 1
+  fi
+}
+
+lam_cmd_list_local() {
+  local file
+  if file=$(lam_find_local_aliases_file); then
+    cat "$file"
+  else
+    echo "(no local .lam-aliases)"
+  fi
+}
+
+# --- Commands: global ---
+lam_cmd_add_global() {
+  local name="${1:-}" cmd="${2:-}"
+  [[ -n "$name" && -n "$cmd" ]] || { echo "lam global add: need <name> <command>" >&2; exit 1; }
+  lam_validate_name "$name" || { echo "invalid alias name: $name" >&2; exit 1; }
+  lam_write_kv "$LAM_GLOBAL_FILE" "$name" "$cmd"
+  echo "wrote $name to $LAM_GLOBAL_FILE"
+}
+
+lam_cmd_rm_global() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || { echo "lam global rm: need <name>" >&2; exit 1; }
+  lam_remove_key "$LAM_GLOBAL_FILE" "$name"
+  echo "removed $name from $LAM_GLOBAL_FILE"
+}
+
+lam_cmd_list_global() {
+  [[ -f "$LAM_GLOBAL_FILE" ]] && cat "$LAM_GLOBAL_FILE" || echo "(no ~/.lam-aliases)"
+}
+
+# --- Compile & Info/Doctor ---
+# Escape single quotes for safe single-quoted alias definitions
+lam_escape_squotes() {
+  local s="$1"
+  s=${s//\'/\'\\\'\'}
+  print -r -- "$s"
+}
+
+lam_cmd_compile() {
+  local local_file="" global_file="$LAM_GLOBAL_FILE"
+  lam_find_local_aliases_file && local_file=$(lam_find_local_aliases_file) || true
+
+  typeset -A eff
+  lam_merge_global_local "$global_file" "${local_file:-/dev/null}" eff
+
+  mkdir -p "$LAM_COMPILED_DIR"
+  local tmp; tmp=$(mktemp "$LAM_COMPILED_DIR/.current.zsh.XXXXXX")
+  : > "$tmp"
+
+  local k v esc
+  for k in ${(ok)eff}; do
+    v=${eff[$k]}
+    esc=$(lam_escape_squotes "$v")
+    print -r -- "alias $k='$esc'" >> "$tmp"
+  done
+  chmod 600 "$tmp" || true
+  mv "$tmp" "$LAM_COMPILED_FILE"
+  echo "compiled -> $LAM_COMPILED_FILE"
+}
+
+lam_cmd_current() {
+  local f
+  if f=$(lam_find_local_aliases_file); then
+    echo "local file: $f"
+  else
+    echo "local file: (none)"
+  fi
+  if [[ -f "$LAM_GLOBAL_FILE" ]]; then
+    echo "global file: $LAM_GLOBAL_FILE"
+  else
+    echo "global file: (none)"
+  fi
+}
+
+lam_cmd_which() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || { echo "lam which: need <alias>" >&2; exit 1; }
+  local local_file="" global_file="$LAM_GLOBAL_FILE"
+  lam_find_local_aliases_file && local_file=$(lam_find_local_aliases_file) || true
+  typeset -A g l
+  lam_parse_file_into_map "$global_file" g
+  lam_parse_file_into_map "${local_file:-/dev/null}" l
+  if [[ -n "${l[$name]-}" ]]; then
+    echo "$name -> local: ${l[$name]}"
+  elif [[ -n "${g[$name]-}" ]]; then
+    echo "$name -> global: ${g[$name]}"
+  else
+    echo "alias not found: $name" >&2; exit 1
+  fi
+}
+
+lam_cmd_info() {
+  echo "OS: $(uname -a)"
+  echo "Shell: $SHELL"
+  echo "Zsh: $ZSH_VERSION"
+  echo "LAM_GLOBAL_FILE=$LAM_GLOBAL_FILE"
+  echo "LAM_COMPILED_DIR=$LAM_COMPILED_DIR"
+  echo "LAM_VERSION=$LAM_VERSION"
+}
+
+lam_cmd_doctor() {
+  local ok=1
+  [[ -d "$LAM_COMPILED_DIR" && -w "$LAM_COMPILED_DIR" ]] || { echo "compiled dir not writable: $LAM_COMPILED_DIR" >&2; ok=0; }
+  [[ -f "$LAM_GLOBAL_FILE" ]] || echo "(hint) no global file yet: $LAM_GLOBAL_FILE"
+  lam_find_local_aliases_file >/dev/null || echo "(hint) no local .lam-aliases in path"
+  if ! lam_cmd_compile >/dev/null 2>&1; then
+    echo "compile failed" >&2; ok=0
+  fi
+  [[ $ok -eq 1 ]] && echo "doctor: OK" || { echo "doctor: issues found"; exit 1; }
+}
+
+# --- Dispatcher ---
+main() {
+  local cmd="${1:-}"
+  case "$cmd" in
+    add)    shift; lam_cmd_add_local "$@" ;; # shift for the rest of args, then call function with them
+    rm)     shift; lam_cmd_rm_local  "$@" ;;
+    list)   shift; lam_cmd_list_local "$@" ;;
+    global)
+      local sub="${2:-}"
+      case "$sub" in
+        add)  shift 2; lam_cmd_add_global  "$@" ;; # shift twice to skip "global" and "add", then call function with rest
+        rm)   shift 2; lam_cmd_rm_global   "$@" ;;
+        list) shift 2; lam_cmd_list_global "$@" ;;
+        *) echo "lam global: use add|rm|list" >&2; exit 1 ;;
+      esac
+      ;;
+    current) shift; lam_cmd_current "$@" ;;
+    which)   shift; lam_cmd_which   "$@" ;;
+    compile) shift; lam_cmd_compile "$@" ;;
+    doctor)  shift; lam_cmd_doctor  "$@" ;;
+    version) echo "$LAM_VERSION" ;;
+    info)    lam_cmd_info ;;
+    -h|--help|help|"") usage; exit 0 ;;
+    *) echo "lam: unknown command '$cmd'" >&2; usage; exit 1 ;;
+  esac
+}
+
+main "$@"
